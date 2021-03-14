@@ -1,0 +1,88 @@
+#define EXTENDED_DATUM_NODE_MODE
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.ServiceModel;
+using Sri;
+
+namespace DatumNode.NormalizationTechAction
+{
+  public static class Script
+  {
+    public static void Run(DatumNodeService datumnode, Sri.SriActionRequest request, out string response)
+    {
+      if (request == null)
+        throw new FaultException("request is empty");
+
+      if (!request.Items.Any())
+        throw new FaultException("items is empty");
+
+      Func<string, string> createFailResponse = x =>
+      {
+        var r = new SriActionResponse() { CheckSuccess = false, CheckMessage = x };
+        var xml = datumnode.Serialize(r);
+        return xml;
+      };
+
+      const int NoUserErrorCode = -20001;
+
+     /* foreach (var i in request.Items)
+      {
+        if (i.SpecId != "cfs_line_access")
+				{
+          // Возвращать response
+          // Написать какие именно выделенные пользователем сервисы идут нахер
+          throw new FaultException("Нормализация технологии доступна только для сервиса Линия (cfs_line_access)");
+        }         
+      }*/
+
+      var cfsDict = new Dictionary<string, Cfs>();
+      foreach (var i in request.Items)
+      {
+        if (cfsDict.ContainsKey(i.Identity))
+          continue;
+
+        var items = Cfs.GetCfs(datumnode, i.Identity, true);
+
+        foreach (var p in items)
+        {
+          if (!cfsDict.ContainsKey(p.Identity))
+            cfsDict.Add(p.Identity, p);
+        }
+      }
+
+      foreach (var i in cfsDict.Values)
+      {
+        if (i.SpecId != "cfs_line_access")
+        {
+          response = createFailResponse(string.Format("Для сервиса {0} ({1}) недоступна нормализация технологии\n", i.ServiceName, i.ExtId));
+          return;
+        }
+      }
+
+      try
+			{
+        // Перейти на cfs_id, а не cfs_public_id
+        var orderResult = datumnode.Execute("*.*.oss_api.sri.action_api.normalize_sbms_tech", new Dictionary<string, object>()
+        {
+          { "cfs_public_ids", string.Join(";", request.Items.Select(x => x.Id))},
+          { "note", "Нормализация технологии" }
+        });
+      }
+      catch(ExecuteException e)
+			{
+        var errorCode = e.ErrorCode;
+
+        if(errorCode == NoUserErrorCode)
+				{
+          response = createFailResponse("Не задан пользователь или IP-адрес");
+          return;
+				}
+			}
+
+      // Вывести список в виде:
+      // Имя сервиса (cfs_public_id) [cfs_spec_id] <-- "Поиграться со шрифтами"
+      response = string.Format(" Для CFS - {0} успешно нормализована технология", string.Join("; ", request.Items.Select(x => x.ExtId)));
+    }
+  }
+}
